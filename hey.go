@@ -16,6 +16,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/csv"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -27,6 +29,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/rakyll/hey/requester"
@@ -39,15 +42,17 @@ const (
 )
 
 var (
-	m           = flag.String("m", "GET", "")
-	headers     = flag.String("h", "", "")
-	body        = flag.String("d", "", "")
-	bodyFile    = flag.String("D", "", "")
-	accept      = flag.String("A", "", "")
-	contentType = flag.String("T", "text/html", "")
-	authHeader  = flag.String("a", "", "")
-	hostHeader  = flag.String("host", "", "")
-	userAgent   = flag.String("U", "", "")
+	m                = flag.String("m", "GET", "")
+	headers          = flag.String("h", "", "")
+	body             = flag.String("d", "", "")
+	bodyFile         = flag.String("D", "", "")
+	templatePath     = flag.String("template", "", "")
+	templateDataPath = flag.String("data", "", "")
+	accept           = flag.String("A", "", "")
+	contentType      = flag.String("T", "text/html", "")
+	authHeader       = flag.String("a", "", "")
+	hostHeader       = flag.String("host", "", "")
+	userAgent        = flag.String("U", "", "")
 
 	output = flag.String("o", "", "")
 
@@ -182,6 +187,32 @@ func main() {
 		bodyAll = slurp
 	}
 
+	var templateBody *template.Template
+	if *templatePath != "" {
+		tpl, err := template.ParseFiles(*templatePath)
+		if err != nil {
+			errAndExit(err.Error())
+		}
+		templateBody = tpl
+	}
+
+	var templateData [][]string
+	if *templateDataPath != "" {
+		tdf, err := os.Open(*templateDataPath)
+		if err != nil {
+			errAndExit(err.Error())
+		}
+
+		csvReader := csv.NewReader(tdf)
+		records, err := csvReader.ReadAll()
+		if err != nil {
+			errAndExit("Unable to parse the template data file as a CSV")
+		}
+		templateData = records[1:len(records)]
+
+		tdf.Close()
+	}
+
 	var proxyURL *gourl.URL
 	if *proxyAddr != "" {
 		var err error
@@ -234,6 +265,32 @@ func main() {
 		H2:                 *h2,
 		ProxyAddr:          proxyURL,
 		Output:             *output,
+	}
+	if *templatePath != "" && *templateDataPath != "" {
+		requestFuncGenerator := func() func() *http.Request {
+			i := 0
+			s := len(templateData)
+
+			return func() *http.Request {
+				defer func() {
+					i++
+				}()
+				tr := new(http.Request)
+				*tr = *req
+				tr.Header = make(http.Header, len(req.Header))
+				for k, s := range req.Header {
+					tr.Header[k] = append([]string(nil), s...)
+				}
+				var buf bytes.Buffer
+				err := templateBody.Execute(&buf, templateData[i%s])
+				if err != nil {
+					errAndExit(err.Error())
+				}
+				tr.Body = ioutil.NopCloser(bytes.NewBuffer(buf.Bytes()))
+				return tr
+			}
+		}
+		w.RequestFunc = requestFuncGenerator()
 	}
 	w.Init()
 
