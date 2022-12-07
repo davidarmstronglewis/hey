@@ -42,11 +42,13 @@ type report struct {
 	avgReq      float64
 	avgRes      float64
 	avgDelay    float64
+	avgQuery    float64
 	connLats    []float64
 	dnsLats     []float64
 	reqLats     []float64
 	resLats     []float64
 	delayLats   []float64
+	queryLats   []float64
 	offsets     []float64
 	statusCodes []int
 
@@ -76,6 +78,7 @@ func newReport(w io.Writer, results chan *result, output string, n int) *report 
 		reqLats:     make([]float64, 0, cap),
 		resLats:     make([]float64, 0, cap),
 		delayLats:   make([]float64, 0, cap),
+		queryLats:   make([]float64, 0, cap),
 		lats:        make([]float64, 0, cap),
 		statusCodes: make([]int, 0, cap),
 	}
@@ -94,6 +97,7 @@ func runReporter(r *report) {
 			r.avgDNS += res.dnsDuration.Seconds()
 			r.avgReq += res.reqDuration.Seconds()
 			r.avgRes += res.resDuration.Seconds()
+			r.avgQuery += res.queryDuration.Seconds()
 			if len(r.resLats) < maxRes {
 				r.lats = append(r.lats, res.duration.Seconds())
 				r.connLats = append(r.connLats, res.connDuration.Seconds())
@@ -101,6 +105,7 @@ func runReporter(r *report) {
 				r.reqLats = append(r.reqLats, res.reqDuration.Seconds())
 				r.delayLats = append(r.delayLats, res.delayDuration.Seconds())
 				r.resLats = append(r.resLats, res.resDuration.Seconds())
+				r.queryLats = append(r.queryLats, res.queryDuration.Seconds())
 				r.statusCodes = append(r.statusCodes, res.statusCode)
 				r.offsets = append(r.offsets, res.offset.Seconds())
 			}
@@ -151,6 +156,7 @@ func (r *report) snapshot() Report {
 		AvgReq:      r.avgReq,
 		AvgRes:      r.avgRes,
 		AvgDelay:    r.avgDelay,
+		AvgQuery:    r.avgQuery,
 		Total:       r.total,
 		ErrorDist:   r.errorDist,
 		NumRes:      r.numRes,
@@ -160,6 +166,7 @@ func (r *report) snapshot() Report {
 		ReqLats:     make([]float64, len(r.lats)),
 		ResLats:     make([]float64, len(r.lats)),
 		DelayLats:   make([]float64, len(r.lats)),
+		QueryLats:   make([]float64, len(r.lats)),
 		Offsets:     make([]float64, len(r.lats)),
 		StatusCodes: make([]int, len(r.lats)),
 	}
@@ -176,6 +183,7 @@ func (r *report) snapshot() Report {
 	copy(snapshot.ReqLats, r.reqLats)
 	copy(snapshot.ResLats, r.resLats)
 	copy(snapshot.DelayLats, r.delayLats)
+	copy(snapshot.QueryLats, r.queryLats)
 	copy(snapshot.StatusCodes, r.statusCodes)
 	copy(snapshot.Offsets, r.offsets)
 
@@ -188,9 +196,13 @@ func (r *report) snapshot() Report {
 	sort.Float64s(r.reqLats)
 	sort.Float64s(r.resLats)
 	sort.Float64s(r.delayLats)
+	sort.Float64s(r.queryLats)
 
 	snapshot.Histogram = r.histogram()
 	snapshot.LatencyDistribution = r.latencies()
+
+	snapshot.QueryHistogram = r.queryHistogram()
+	snapshot.QueryDistribution = r.queryLatencies()
 
 	snapshot.Fastest = r.fastest
 	snapshot.Slowest = r.slowest
@@ -202,6 +214,10 @@ func (r *report) snapshot() Report {
 	snapshot.ReqMin = r.reqLats[len(r.reqLats)-1]
 	snapshot.DelayMax = r.delayLats[0]
 	snapshot.DelayMin = r.delayLats[len(r.delayLats)-1]
+	snapshot.QueryMax = r.queryLats[0]
+	snapshot.QueryMin = r.queryLats[len(r.queryLats)-1]
+	snapshot.QueryTot = sumFloat64(r.queryLats)
+	snapshot.QueryAvg = avgFloat64(r.queryLats)
 	snapshot.ResMax = r.resLats[0]
 	snapshot.ResMin = r.resLats[len(r.resLats)-1]
 
@@ -215,13 +231,21 @@ func (r *report) snapshot() Report {
 }
 
 func (r *report) latencies() []LatencyDistribution {
+	return calcLatencies(r.lats)
+}
+
+func (r *report) queryLatencies() []LatencyDistribution {
+	return calcLatencies(r.queryLats)
+}
+
+func calcLatencies(lats []float64) []LatencyDistribution {
 	pctls := []int{10, 25, 50, 75, 90, 95, 99}
 	data := make([]float64, len(pctls))
 	j := 0
-	for i := 0; i < len(r.lats) && j < len(pctls); i++ {
-		current := i * 100 / len(r.lats)
+	for i := 0; i < len(lats) && j < len(pctls); i++ {
+		current := i * 100 / len(lats)
 		if current >= pctls[j] {
-			data[j] = r.lats[i]
+			data[j] = lats[i]
 			j++
 		}
 	}
@@ -235,18 +259,29 @@ func (r *report) latencies() []LatencyDistribution {
 }
 
 func (r *report) histogram() []Bucket {
+	return calcHistogram(r.slowest, r.fastest, r.lats)
+}
+
+func (r *report) queryHistogram() []Bucket {
+	sort.Float64s(r.queryLats)
+	slowest := r.queryLats[len(r.queryLats)-1]
+	fastest := r.queryLats[0]
+	return calcHistogram(slowest, fastest, r.queryLats)
+}
+
+func calcHistogram(slowest float64, fastest float64, lats []float64) []Bucket {
 	bc := 10
 	buckets := make([]float64, bc+1)
 	counts := make([]int, bc+1)
-	bs := (r.slowest - r.fastest) / float64(bc)
+	bs := (slowest - fastest) / float64(bc)
 	for i := 0; i < bc; i++ {
-		buckets[i] = r.fastest + bs*float64(i)
+		buckets[i] = fastest + bs*float64(i)
 	}
-	buckets[bc] = r.slowest
+	buckets[bc] = slowest
 	var bi int
 	var max int
-	for i := 0; i < len(r.lats); {
-		if r.lats[i] <= buckets[bi] {
+	for i := 0; i < len(lats); {
+		if lats[i] <= buckets[bi] {
 			i++
 			counts[bi]++
 			if max < counts[bi] {
@@ -261,7 +296,7 @@ func (r *report) histogram() []Bucket {
 		res[i] = Bucket{
 			Mark:      buckets[i],
 			Count:     counts[i],
-			Frequency: float64(counts[i]) / float64(len(r.lats)),
+			Frequency: float64(counts[i]) / float64(len(lats)),
 		}
 	}
 	return res
@@ -279,6 +314,7 @@ type Report struct {
 	AvgReq   float64
 	AvgRes   float64
 	AvgDelay float64
+	AvgQuery float64
 	ConnMax  float64
 	ConnMin  float64
 	DnsMax   float64
@@ -289,6 +325,10 @@ type Report struct {
 	ResMin   float64
 	DelayMax float64
 	DelayMin float64
+	QueryMax float64
+	QueryMin float64
+	QueryAvg float64
+	QueryTot float64
 
 	Lats        []float64
 	ConnLats    []float64
@@ -296,6 +336,7 @@ type Report struct {
 	ReqLats     []float64
 	ResLats     []float64
 	DelayLats   []float64
+	QueryLats   []float64
 	Offsets     []float64
 	StatusCodes []int
 
@@ -309,6 +350,9 @@ type Report struct {
 
 	LatencyDistribution []LatencyDistribution
 	Histogram           []Bucket
+
+	QueryDistribution []LatencyDistribution
+	QueryHistogram    []Bucket
 }
 
 type LatencyDistribution struct {

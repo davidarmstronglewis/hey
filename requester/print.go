@@ -104,10 +104,23 @@ Summary:
   Total data:	{{ .SizeTotal }} bytes
   Size/request:	{{ .SizeReq }} bytes{{ end }}
 
+Query Summary:
+	Total:	{{ formatNumber .QueryTot }} secs
+  Slowest:	{{ formatNumber .QueryMax }} secs
+  Fastest:	{{ formatNumber .QueryMin }} secs
+  Average:	{{ formatNumber .QueryAvg }} secs
+
+
 Response time histogram:
 {{ histogram .Histogram }}
 
+Query time histogram:
+{{ histogram .QueryHistogram }}
+
 Latency distribution:{{ range .LatencyDistribution }}
+  {{ .Percentage }}%% in {{ formatNumber .Latency }} secs{{ end }}
+
+Query distribution:{{ range .QueryDistribution }}
   {{ .Percentage }}%% in {{ formatNumber .Latency }} secs{{ end }}
 
 Details (average, fastest, slowest):

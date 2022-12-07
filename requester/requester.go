@@ -18,6 +18,7 @@ package requester
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -34,6 +35,10 @@ import (
 const maxResult = 1000000
 const maxIdleConn = 500
 
+type ESQueryResult struct {
+	Took float64 `json:"took"`
+}
+
 type result struct {
 	err           error
 	statusCode    int
@@ -44,6 +49,7 @@ type result struct {
 	reqDuration   time.Duration // request "write" duration
 	resDuration   time.Duration // response "read" duration
 	delayDuration time.Duration // delay between response and request
+	queryDuration time.Duration // es query duration
 	contentLength int64
 }
 
@@ -150,6 +156,8 @@ func (b *Work) makeRequest(c *http.Client) {
 	var code int
 	var dnsStart, connStart, resStart, reqStart, delayStart time.Duration
 	var dnsDuration, connDuration, resDuration, reqDuration, delayDuration time.Duration
+	var queryDuration time.Duration
+
 	var req *http.Request
 	if b.RequestFunc != nil {
 		req = b.RequestFunc()
@@ -183,12 +191,21 @@ func (b *Work) makeRequest(c *http.Client) {
 	}
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 	resp, err := c.Do(req)
+
 	if err == nil {
 		size = resp.ContentLength
 		code = resp.StatusCode
-		io.Copy(ioutil.Discard, resp.Body)
+
+		var eqr ESQueryResult
+		if body, err := io.ReadAll(resp.Body); err == nil {
+			if err := json.Unmarshal(body, &eqr); err == nil {
+				queryDuration = time.Duration(eqr.Took) * time.Millisecond
+			}
+		}
+
 		resp.Body.Close()
 	}
+
 	t := now()
 	resDuration = t - resStart
 	finish := t - s
@@ -203,6 +220,7 @@ func (b *Work) makeRequest(c *http.Client) {
 		reqDuration:   reqDuration,
 		resDuration:   resDuration,
 		delayDuration: delayDuration,
+		queryDuration: queryDuration,
 	}
 }
 
