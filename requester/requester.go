@@ -255,8 +255,14 @@ func (b *Work) runWorkers() {
 
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-			ServerName:         b.Request.Host,
+			CipherSuites: []uint16{
+				tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			},
+			PreferServerCipherSuites: true,
+			InsecureSkipVerify:       true,
+			MinVersion:               tls.VersionTLS11,
+			MaxVersion:               tls.VersionTLS12,
 		},
 		MaxIdleConnsPerHost: min(b.C, maxIdleConn),
 		DisableCompression:  b.DisableCompression,
